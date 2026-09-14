@@ -4,8 +4,8 @@ GPU-accelerated **Proof of Secure Erasure** for persistent storage: fill every
 sector of an NVMe drive with PoSE-DB graph labels generated on one or more NVIDIA
 GPUs, fast enough that the drive, not the labeler, is the bottleneck in sight.
 
-This repository is the code behind Amodo Design's write-up *Improving Disk Wiping
-Speed for Memory Wipes*, a follow-up to
+This repository is the code behind Amodo Design's write-up [Improving Disk Wiping
+Speed for Memory Wipes](https://amododesign.com/notes/2026-09-14-disk-wiping-speed/), a follow-up to
 [our first memory-wiping post](https://amododesign.com/notes/2026-07-01-memory-wiping/).
 It contains the graph-labeling library, the CUDA labeler, the multi-GPU disk-wipe
 benchmark, and the planning calculator used to produce the numbers in that post.
