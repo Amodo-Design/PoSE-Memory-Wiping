@@ -1,0 +1,6 @@
+hash_vectors 4 0.168294
+graph_round_trip 4 0.0611374
+region_labeling 4 0.0680765
+inplace_labeling 4 0.111212
+slot_map 4 1.84058
+---

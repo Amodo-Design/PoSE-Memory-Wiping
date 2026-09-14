@@ -1,0 +1,33 @@
+PoSE-Memory-Wiping
+Copyright (c) 2026 Amodo Design Ltd. All rights reserved.
+
+This software is released under the MIT License (see LICENSE). It is provided
+"as is", without warranty of any kind. Amodo Design Ltd accepts no liability
+for any loss or damage arising from its use.
+
+THIS SOFTWARE OVERWRITES STORAGE DEVICES. tools/disk-wipe-bench destroys all
+data on every block device it is pointed at. Its safety guards are aids, not
+guarantees. You are solely responsible for what you run it against.
+
+This is research code accompanying published experiments. It is not a
+certified data-sanitisation product and has not been independently audited.
+The security argument rests on the PoSE-DB paper (Bursuc, Gil-Pons, Mauw,
+Trujillo-Rasua, 2024, https://arxiv.org/abs/2401.06626); the implementation
+here is Amodo Design's own and is not derived from the authors' reference code.
+
+Third-party components
+----------------------
+common/vendor/blake3/  BLAKE3 C implementation, version 1.8.5
+                       Copyright the BLAKE3 team
+                       https://github.com/BLAKE3-team/BLAKE3
+                       Licensed under CC0 1.0 Universal, Apache License 2.0,
+                       or Apache License 2.0 with LLVM exception, at your
+                       option. See common/vendor/blake3/LICENSE.
+
+common/src/cuda/blake3_node.cuh
+                       The on-device BLAKE3 compression core (g, round,
+                       permute, compress) follows the Blaze-3 BLAKE3-gpu
+                       CUDA implementation.
+                       Copyright (c) 2021 Rehan Vipin
+                       https://github.com/Blaze-3/BLAKE3-gpu
+                       Licensed under the MIT License.

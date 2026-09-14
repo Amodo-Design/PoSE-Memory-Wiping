@@ -1,0 +1,2 @@
+/usr/bin/ar qc libpose_common.a CMakeFiles/pose_common.dir/src/hash.c.o CMakeFiles/pose_common.dir/src/sha256.c.o CMakeFiles/pose_common.dir/src/aes_prf.c.o CMakeFiles/pose_common.dir/src/graph.c.o CMakeFiles/blake3_vendor.dir/vendor/blake3/blake3.c.o CMakeFiles/blake3_vendor.dir/vendor/blake3/blake3_dispatch.c.o CMakeFiles/blake3_vendor.dir/vendor/blake3/blake3_portable.c.o CMakeFiles/blake3_vendor.dir/vendor/blake3/blake3_neon.c.o
+/usr/bin/ranlib libpose_common.a

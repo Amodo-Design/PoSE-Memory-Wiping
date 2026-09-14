@@ -1,0 +1,200 @@
+Start testing: Sep 14 11:40 BST
+----------------------------------------------------------
+1/5 Testing: hash_vectors
+1/5 Test: hash_vectors
+Command: "/Users/sammaxwell/Projects/LVHEM/PoSE-Memory-Wiping/common/build/test_hash"
+Directory: /Users/sammaxwell/Projects/LVHEM/PoSE-Memory-Wiping/common/build
+"hash_vectors" start time: Sep 14 11:40 BST
+Output:
+----------------------------------------------------------
+PASS blake3_empty
+PASS blake3_1byte
+PASS blake3_1024bytes
+PASS source_label_determinism
+PASS source_label_uniqueness
+PASS source_vs_internal
+PASS descriptor_uniqueness
+PASS chunk_seed_determinism
+PASS chunk_seed_uniqueness
+PASS chunk_seed_domain_separation
+PASS batch_consistency
+PASS batch_consistency_source
+
+All hash tests passed
+<end of output>
+Test time =   0.67 sec
+----------------------------------------------------------
+Test Passed.
+"hash_vectors" end time: Sep 14 11:40 BST
+"hash_vectors" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/5 Testing: graph_round_trip
+2/5 Test: graph_round_trip
+Command: "/Users/sammaxwell/Projects/LVHEM/PoSE-Memory-Wiping/common/build/test_graph"
+Directory: /Users/sammaxwell/Projects/LVHEM/PoSE-Memory-Wiping/common/build
+"graph_round_trip" start time: Sep 14 11:40 BST
+Output:
+----------------------------------------------------------
+PASS test_parameter_n: n(1)=0
+PASS test_parameter_n: n(2)=0
+PASS test_parameter_n: n(3)=1
+PASS test_parameter_n: n(4)=1
+PASS test_parameter_n: n(5)=2
+PASS test_parameter_n: n(8)=2
+PASS test_parameter_n: n(9)=3
+PASS test_parameter_n: n(16)=3
+PASS test_parameter_n: n(17)=4
+PASS test_parameter_n: n(32)=4
+PASS test_determinism: label returns 0
+PASS test_determinism: second label returns 0
+PASS test_determinism: same seed → same output
+PASS test_seed_sensitivity: different seeds → different output
+PASS test_challenge_agrees: challenge agrees for m=1
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=1
+PASS test_no_collisions: no collisions for m=1
+PASS test_challenge_agrees: challenge agrees for m=2
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=2
+PASS test_no_collisions: no collisions for m=2
+PASS test_challenge_agrees: challenge agrees for m=3
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=3
+PASS test_no_collisions: no collisions for m=3
+PASS test_challenge_agrees: challenge agrees for m=4
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=4
+PASS test_no_collisions: no collisions for m=4
+PASS test_challenge_agrees: challenge agrees for m=5
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=5
+PASS test_no_collisions: no collisions for m=5
+PASS test_challenge_agrees: challenge agrees for m=7
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=7
+PASS test_no_collisions: no collisions for m=7
+PASS test_challenge_agrees: challenge agrees for m=8
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=8
+PASS test_no_collisions: no collisions for m=8
+PASS test_challenge_agrees: challenge agrees for m=9
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=9
+PASS test_no_collisions: no collisions for m=9
+PASS test_challenge_agrees: challenge agrees for m=15
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=15
+PASS test_no_collisions: no collisions for m=15
+PASS test_challenge_agrees: challenge agrees for m=16
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=16
+PASS test_no_collisions: no collisions for m=16
+PASS test_challenge_agrees: challenge agrees for m=17
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=17
+PASS test_challenge_agrees: challenge agrees for m=31
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=31
+PASS test_challenge_agrees: challenge agrees for m=32
+PASS test_challenge_agrees: challenge[i] == all[i] for all i, m=32
+
+All graph tests passed
+<end of output>
+Test time =   0.24 sec
+----------------------------------------------------------
+Test Passed.
+"graph_round_trip" end time: Sep 14 11:40 BST
+"graph_round_trip" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/5 Testing: region_labeling
+3/5 Test: region_labeling
+Command: "/Users/sammaxwell/Projects/LVHEM/PoSE-Memory-Wiping/common/build/test_region"
+Directory: /Users/sammaxwell/Projects/LVHEM/PoSE-Memory-Wiping/common/build
+"region_labeling" start time: Sep 14 11:40 BST
+Output:
+----------------------------------------------------------
+PASS test_region_zero_offset: label_region returns 0
+PASS test_region_zero_offset: all blocks match challenge at offset 0
+PASS test_region_nonzero_offset: label_region returns 0 with nonzero offset
+PASS test_region_nonzero_offset: all blocks match challenge at chunk-aligned offset
+PASS test_region_nonzero_offset: chunk 1 labels differ from chunk 0 labels
+PASS test_region_determinism: same seed + offset → same labels
+PASS test_region_seed_sensitivity: different seeds → different labels
+
+All region tests passed
+<end of output>
+Test time =   0.27 sec
+----------------------------------------------------------
+Test Passed.
+"region_labeling" end time: Sep 14 11:40 BST
+"region_labeling" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/5 Testing: inplace_labeling
+4/5 Test: inplace_labeling
+Command: "/Users/sammaxwell/Projects/LVHEM/PoSE-Memory-Wiping/common/build/test_inplace"
+Directory: /Users/sammaxwell/Projects/LVHEM/PoSE-Memory-Wiping/common/build
+"inplace_labeling" start time: Sep 14 11:40 BST
+Output:
+----------------------------------------------------------
+super_chunk_blocks(TEST_CHUNK_BLOCKS=16) = 16
+PASS test_correctness_and_layout: allocations succeeded
+PASS test_correctness_and_layout: pool created
+PASS test_correctness_and_layout: inplace labeler returned 0
+PASS test_correctness_and_layout: all challenge labels at node_id offsets match pose_graph_challenge
+PASS test_correctness_and_layout: challenge node_ids is the identity (rank r at block r)
+PASS test_correctness_and_layout: every sequential offset buf[r*32] holds rank r's output label
+PASS test_correctness_and_layout: super_chunk_blocks == chunk_blocks (100% of persisted bytes attestable)
+PASS test_multi_super_chunk: two-super-chunk inplace returned 0
+PASS test_multi_super_chunk: super-chunk 0: challenge labels correct
+PASS test_multi_super_chunk: super-chunk 1: challenge labels correct
+PASS test_multi_super_chunk: two super-chunks differ (different chunk seeds)
+PASS test_block_offset: different region_block_offset → different labels
+PASS test_block_offset: buf at offset super_blks verifies against chunk_index=1 seed
+  super-chunk (faithful): 4096 blocks (128 KB persisted, 100% attested)
+  scratch (inplace)    : 1280 KB / thread
+  old full-scaffold scratch: 17983 KB / thread
+PASS test_scratch_budget: faithful super-chunk persists exactly chunk_blocks output labels
+PASS test_scratch_budget: transient scratch is smaller than the old full-scaffold label buffer
+
+All inplace tests passed
+<end of output>
+Test time =   0.44 sec
+----------------------------------------------------------
+Test Passed.
+"inplace_labeling" end time: Sep 14 11:40 BST
+"inplace_labeling" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/5 Testing: slot_map
+5/5 Test: slot_map
+Command: "/Users/sammaxwell/Projects/LVHEM/PoSE-Memory-Wiping/common/build/test_slot_map"
+Directory: /Users/sammaxwell/Projects/LVHEM/PoSE-Memory-Wiping/common/build
+"slot_map" start time: Sep 14 11:40 BST
+Output:
+----------------------------------------------------------
+PASS cb=4096 slot_map returns 0 (count=557054)
+PASS cb=4096 pool_size=8192 <= 8*half_w=16384  (68.0x reduction vs full scaffold)
+PASS cb=4096 all slots in [0, pool_size)
+PASS cb=4096 no live-range overlap among all 557054 nodes
+PASS cb=8192 slot_map returns 0 (count=1310718)
+PASS cb=8192 pool_size=16384 <= 8*half_w=32768  (80.0x reduction vs full scaffold)
+PASS cb=8192 all slots in [0, pool_size)
+PASS cb=8192 no live-range overlap among all 1310718 nodes
+PASS cb=16384 slot_map returns 0 (count=3047422)
+PASS cb=16384 pool_size=32768 <= 8*half_w=65536  (93.0x reduction vs full scaffold)
+PASS cb=16384 all slots in [0, pool_size)
+PASS cb=16384 no live-range overlap among all 3047422 nodes
+PASS cb=32768 slot_map returns 0 (count=7012350)
+PASS cb=32768 pool_size=65536 <= 8*half_w=131072  (107.0x reduction vs full scaffold)
+PASS cb=32768 all slots in [0, pool_size)
+PASS cb=32768 no live-range overlap among all 7012350 nodes
+PASS cb=65536 slot_map returns 0 (count=15990782)
+PASS cb=65536 pool_size=131072 <= 8*half_w=262144  (122.0x reduction vs full scaffold)
+PASS cb=65536 all slots in [0, pool_size)
+PASS cb=65536 no live-range overlap among all 15990782 nodes
+PASS cb=131072 slot_map returns 0 (count=36175870)
+PASS cb=131072 pool_size=262144 <= 8*half_w=524288  (138.0x reduction vs full scaffold)
+PASS cb=131072 all slots in [0, pool_size)
+PASS cb=131072 no live-range overlap among all 36175870 nodes
+
+All slot-map checks passed
+<end of output>
+Test time =   7.36 sec
+----------------------------------------------------------
+Test Passed.
+"slot_map" end time: Sep 14 11:40 BST
+"slot_map" time elapsed: 00:00:07
+----------------------------------------------------------
+
+End testing: Sep 14 11:40 BST
