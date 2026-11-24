@@ -1,0 +1,18 @@
+# Build artifacts
+build/
+build-*/
+.cache/
+compile_commands.json
+__pycache__/
+pose-verifier/target/
+
+# UKI tooling outputs and fetched/built inputs
+uki/build/
+vendor/*-src/
+vendor/efi-stubs/
+vendor/nvidia-firmware/
+vendor/nvidia-libcuda/
+vendor/kernel-build/
+
+# Secure Boot signing keys: the private key must never be committed.
+keys/

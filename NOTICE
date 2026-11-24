@@ -17,14 +17,15 @@ here is Amodo Design's own and is not derived from the authors' reference code.
 
 Third-party components
 ----------------------
-common/vendor/blake3/  BLAKE3 C implementation, version 1.8.5
+pose-common/vendor/blake3/
+                       BLAKE3 C implementation, version 1.8.5
                        Copyright the BLAKE3 team
                        https://github.com/BLAKE3-team/BLAKE3
                        Licensed under CC0 1.0 Universal, Apache License 2.0,
                        or Apache License 2.0 with LLVM exception, at your
-                       option. See common/vendor/blake3/LICENSE.
+                       option. See pose-common/vendor/blake3/LICENSE.
 
-common/src/cuda/blake3_node.cuh
+pose-common/src/cuda/blake3_node.cuh
                        The on-device BLAKE3 compression core (g, round,
                        permute, compress) follows the Blaze-3 BLAKE3-gpu
                        CUDA implementation.

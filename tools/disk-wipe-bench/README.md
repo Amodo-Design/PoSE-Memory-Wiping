@@ -3,7 +3,7 @@
 Performs the **real disk wipe** and measures how fast it runs. It fills every
 addressable sector of the chosen block device(s) with PoSE-DB graph labels
 generated on the GPU — the same labels the CPU path
-(`pose_graph_label_region_pooled_inplace` in `common/src/graph.c`) and the
+(`pose_graph_label_region_pooled_inplace` in `pose-common/src/graph.c`) and the
 verifier produce — and reports achieved MiB/s per GPU and in aggregate.
 
 The labeling *is* the erasure: writing the graph's output-set labels overwrites
@@ -13,7 +13,7 @@ itself so the parallel-wipe design can be sized on measured numbers rather than
 the `tools/disk-calc` model.
 
 It does **not** reimplement the algorithm. Labels come from the validated
-`pose_graph_label_hbm` (`common/src/cuda`), byte-identical to the CPU in-place
+`pose_graph_label_hbm` (`pose-common/src/cuda`), byte-identical to the CPU in-place
 path. The only new code here is host-side plumbing: GPU→host copy, O_DIRECT
 sequential writes, multi-GPU scheduling, and safety guards.
 
@@ -77,9 +77,12 @@ straightforward.
   stores/loads, otherwise stay on 3.
 - `-DCMAKE_CUDA_COMPILER` is only needed if nvcc is not on `PATH`.
 
-The same build is wrapped by the top-level `Makefile` (`make disk-wipe-bench
-GPU_STRATEGY=warp`), which runs it inside the CUDA devel container from the
-repo `Dockerfile` when you do not have nvcc on the build machine.
+The same build is wrapped by the top-level `Makefile` for when you do not have
+nvcc on the build machine: `make docker` builds the `pose-build` image from
+`docker/Dockerfile`, and `make disk-wipe-bench` (`GPU_STRATEGY=warp` by default,
+also `WARP_MIN_BLOCKS` and `CUDA_ARCH`) builds the x86_64 binary inside it, on
+either an amd64 or an arm64 machine. Run `make disk-wipe-bench-clean` before
+switching strategy.
 
 After any rebuild that touches the hash code, run a `--verify` wipe against a
 loop device before trusting the numbers (see *Verifying the labels*).

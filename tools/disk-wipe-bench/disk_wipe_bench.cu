@@ -13,7 +13,7 @@
  * the wipe itself runs so the parallel-wipe design can be sized on real numbers.
  *
  * It does NOT reimplement the algorithm.  Labels come from the validated
- * pose_graph_label_hbm (common/src/cuda) — byte-identical to the CPU in-place
+ * pose_graph_label_hbm (pose-common/src/cuda) — byte-identical to the CPU in-place
  * path (pose_graph_label_region_pooled_inplace), so what this tool writes is
  * what the verifier would later challenge.  The only
  * new code is the host-side plumbing: GPU→host copy, O_DIRECT sequential writes,
@@ -52,9 +52,9 @@
  * arch-specific so benchmark on the target.  See tools/disk-wipe-bench/README.md.
  */
 
-#include "../../common/include/gpu_label.h"
-#include "../../common/include/graph.h"
-#include "../../common/include/hash.h"
+#include "../../pose-common/include/gpu_label.h"
+#include "../../pose-common/include/graph.h"
+#include "../../pose-common/include/hash.h"
 
 #include <cuda_runtime.h>
 
@@ -308,7 +308,7 @@ static int verify_disk(int fd, uint64_t wipe_len, uint32_t cb, uint64_t samples,
     if (samples > n_super) samples = n_super;
 
     uint8_t *disk_buf = nullptr, *ref = nullptr;
-    uint8_t *scratch[POSE_REGION_THREADS] = {0};
+    uint8_t *scratch[POSE_REGION_THREADS_MAX] = {0};
     pose_graph_pool_t *pool = nullptr;
     int rc = -1;
 
@@ -321,7 +321,7 @@ static int verify_disk(int fd, uint64_t wipe_len, uint32_t cb, uint64_t samples,
     {
         size_t sb = pose_graph_scratch_bytes_inplace(cb);
         bool alloc_ok = true;
-        for (int i = 0; i < POSE_REGION_THREADS; i++) {
+        for (int i = 0, n = pose_region_threads(); i < n; i++) {
             scratch[i] = (uint8_t *)malloc(sb);
             if (!scratch[i]) alloc_ok = false;
         }
@@ -358,7 +358,7 @@ static int verify_disk(int fd, uint64_t wipe_len, uint32_t cb, uint64_t samples,
     }
 
 done:
-    for (int i = 0; i < POSE_REGION_THREADS; i++) free(scratch[i]);
+    for (int i = 0; i < POSE_REGION_THREADS_MAX; i++) free(scratch[i]);
     if (pool) pose_graph_pool_destroy(pool);
     free(ref);
     free(disk_buf);

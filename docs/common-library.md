@@ -1,21 +1,23 @@
 # Common Library — Graph Labeling & Hash Primitive
 
-`common/` is the single implementation of the PoSE-DB graph algorithm and hash primitive. In the full system it is shared between the prover (the device being wiped) and the verifier; in this repository it is consumed by the CUDA labeler (`src/cuda/`) and `tools/disk-wipe-bench`. Correctness here determines correctness of the entire proof.
+`pose-common/` is the single implementation of the PoSE-DB graph algorithm and hash primitive. It is shared between the prover side (`source-daemon`, which generates the labels, and `tools/disk-wipe-bench`) and the verifier (`pose-verifier`, through FFI), and it is what the CUDA labeler (`src/cuda/`) reproduces byte for byte. Correctness here determines correctness of the entire proof.
 
-This document describes the CPU library. The GPU labeler is documented in the headers of `common/src/cuda/label_gpu_*.cu` and `common/include/gpu_label.h`.
+This document describes the CPU library. The GPU labeler is documented in the headers of `pose-common/src/cuda/label_gpu_*.cu`, `pose-common/include/gpu_label.h` and `pose-common/include/gpu_session.h`.
 
 ## Module Structure
 
 ```mermaid
 graph LR
-    subgraph common["common/"]
+    subgraph common["pose-common/"]
         GH["include/graph.h"]
         HH["include/hash.h"]
         SH["include/sha256.h"]
+        AH["include/aes_prf.h"]
         GC["src/graph.c"]
         HC["src/hash.c"]
         SC["src/sha256.c"]
-        B3["vendor/blake3/<br/>blake3.c + blake3_portable.c<br/>+ blake3_dispatch.c"]
+        AC["src/aes_prf.c"]
+        B3["vendor/blake3/<br/>blake3.c + blake3_portable.c<br/>+ blake3_dispatch.c<br/>+ per-architecture SIMD backends"]
     end
 
     GC --> GH
@@ -23,11 +25,13 @@ graph LR
     HC --> HH
     HC --> B3
     HC --> SH
+    HC --> AH
     SC --> SH
+    AC --> AH
 
     subgraph consumers["Consumers"]
-        D["prover / disk-wipe-bench<br/>(C static link)"]
-        V["verifier<br/>(FFI, same library)"]
+        D["source-daemon / disk-wipe-bench<br/>(C static link)"]
+        V["pose-verifier<br/>(Rust FFI, same library)"]
     end
 
     common --> D
@@ -36,12 +40,13 @@ graph LR
 
 ## Hash Primitive
 
-`hash.c` dispatches between two hash algorithms based on the `pose_hash_algo_t` enum passed at runtime. The enum is declared in `include/hash.h` and threaded through every labeling call:
+`hash.c` dispatches between three hash algorithms based on the `pose_hash_algo_t` enum passed at runtime. The enum is declared in `include/hash.h` and threaded through every labeling call:
 
 ```c
 typedef enum {
-    POSE_HASH_BLAKE3 = 0,   /* default */
-    POSE_HASH_SHA256 = 1,   /* ARMv8 SHA-2 hardware acceleration path */
+    POSE_HASH_BLAKE3  = 0,   /* default */
+    POSE_HASH_SHA256  = 1,   /* ARMv8 SHA-2 hardware acceleration path */
+    POSE_HASH_AES_PRF = 2,   /* AES-128 CBC-MAC double-pipe PRF (AES-NI / ARMv8 AES) */
 } pose_hash_algo_t;
 ```
 
@@ -51,9 +56,9 @@ The `algo` value is part of the session plan agreed between prover and verifier.
 
 `hash.c` uses BLAKE3 in **key-derivation mode** (`blake3_hasher_init_derive_key`). The context string acts as a domain separator — each label type produces outputs that are cryptographically independent even if all other inputs are identical.
 
-The key performance path uses `blake3_hash_many` which hashes up to 4 independent 192-byte messages in a single NEON-vectorised call on ARM64. This 4-wide batching is what makes BLAKE3 fast for graph labeling: each call to `pose_label_node_many(n=4, ...)` invokes `blake3_hash_many` once, processing all four messages simultaneously.
+The key performance path uses `blake3_hash_many`, which hashes several independent 192-byte messages in one vectorised call. This batching is what makes BLAKE3 fast for graph labeling: `pose_label_node_many` takes up to `POSE_LABEL_BATCH` (16) nodes and passes them to `blake3_hash_many` in one call, which uses the widest backend the CPU has (up to AVX-512 16-wide on x86_64, NEON 4-wide on ARM64). Batch width never changes a label byte.
 
-BLAKE3 vendor sources are compiled with `BLAKE3_USE_NEON=1` (ARM64 NEON), with all x86 SIMD paths disabled (`BLAKE3_NO_AVX512`, `BLAKE3_NO_AVX2`, `BLAKE3_NO_SSE41`, `BLAKE3_NO_SSE2`).
+The BLAKE3 vendor sources are built per target architecture. On x86_64 the SSE2, SSE4.1, AVX2 and AVX-512 backends are all compiled and chosen at runtime by CPUID. On ARM64 the NEON backend is used (`BLAKE3_USE_NEON=1`) and the x86 paths are disabled (`BLAKE3_NO_AVX512`, `BLAKE3_NO_AVX2`, `BLAKE3_NO_SSE41`, `BLAKE3_NO_SSE2`). On armv7 (the BMC, which has no NEON) only the portable backend is built. All of them produce identical labels.
 
 ### SHA-256 (benchmarking path)
 
@@ -63,15 +68,19 @@ BLAKE3 vendor sources are compiled with `BLAKE3_USE_NEON=1` (ARM64 NEON), with a
 - `#ifdef __ARM_FEATURE_SHA2`: uses `vsha256hq_u32`, `vsha256h2q_u32`, `vsha256su0q_u32`, `vsha256su1q_u32` NEON intrinsics. Processes one 64-byte SHA-256 block per call using hardware instructions.
 - Fallback: portable C — standard `CH`/`MAJ`/`Σ₀`/`Σ₁`/`σ₀`/`σ₁` operations.
 
-`sha256.c` is compiled with `-march=armv8-a+sha2` so the intrinsics are available without raising the march for the rest of the build.
+On ARM64, `sha256.c` is compiled with `-march=armv8-a+sha2` so the intrinsics are available without raising the march for the rest of the build.
 
 **Key architectural difference from BLAKE3:** there is no hardware SHA-256 equivalent to `blake3_hash_many`. The SHA-256 data-dependent message schedule prevents simple 4-lane inter-message SIMD without custom interleaved intrinsic code. The SHA-256 path therefore makes `n` sequential single-message calls in `pose_label_node_many`, versus BLAKE3's single 4-wide call. Whether ARMv8 SHA-2 speed per message compensates for the loss of 4× batching is the empirical question this path answers.
 
 **The SHA-256 path has no domain-separated keying** — it hashes the raw 192-byte node message. This is correct for a throughput benchmark but means SHA-256 labels cannot be cross-checked against an independent keyed scheme. Do not use `POSE_HASH_SHA256` in a production proof record.
 
+### AES-PRF
+
+`aes_prf.c` is an AES-128 CBC-MAC double-pipe PRF over a compact 112-byte message (layout in `include/aes_prf.h`), with the chunk seed as the key rather than part of the message. It has two hardware backends that produce identical labels, ARMv8 AES (`-march=armv8-a+crypto`) and x86 AES-NI (`-maes`), and is the fastest of the three on a CPU. There is no portable fallback: on a target with neither (armv7) the function aborts, so `POSE_HASH_AES_PRF` is not available there.
+
 ### Node Message Layout
 
-All calls share a fixed 192-byte message structure (3 × 64-byte blocks), compatible with both BLAKE3's 64-byte block length and SHA-256's 64-byte block size:
+BLAKE3 and SHA-256 calls share a fixed 192-byte message structure (3 × 64-byte blocks), compatible with both BLAKE3's 64-byte block length and SHA-256's 64-byte block size:
 
 ```
 Block 0 [  0.. 63]:  node_index (8 B big-endian) | zeros (56 B)
@@ -236,13 +245,18 @@ Cost: the scaffold is still *hashed* transiently, so the labeler does `scratch_n
 
 ## Public API
 
-Every labeling function takes a `pose_hash_algo_t algo` as its last parameter. Pass `POSE_HASH_BLAKE3` for normal operation; pass `POSE_HASH_SHA256` to use the ARMv8 hardware SHA-2 path.
+Every labeling function takes a `pose_hash_algo_t algo`. Pass `POSE_HASH_BLAKE3` for normal operation; `POSE_HASH_SHA256` and `POSE_HASH_AES_PRF` select the alternatives above. The region functions also take `chunk_blocks`, where 0 means the `POSE_CHUNK_BLOCKS` default (4096). The excerpt below covers the main entry points; `include/graph.h` is the full reference.
 
 ```c
 typedef enum {
-    POSE_HASH_BLAKE3 = 0,
-    POSE_HASH_SHA256 = 1,
+    POSE_HASH_BLAKE3  = 0,
+    POSE_HASH_SHA256  = 1,
+    POSE_HASH_AES_PRF = 2,
 } pose_hash_algo_t;
+
+// CPU labeling threads used at runtime: the CPUs this process may run on,
+// clamped to [1, POSE_REGION_THREADS_MAX]
+int pose_region_threads(void);
 
 // Compute graph parameter n from m
 int pose_graph_parameter_n(uint64_t m);
@@ -263,20 +277,22 @@ int pose_graph_challenge(const uint8_t *seed, size_t seed_len,
 int pose_graph_label_region(const uint8_t *session_seed, size_t seed_len,
                              void *region, size_t region_len,
                              uint64_t region_block_offset,
-                             pose_hash_algo_t algo);
+                             pose_hash_algo_t algo,
+                             uint32_t chunk_blocks);
 
 // Same but with caller-supplied scratch buffers (used by the prover after pool creation)
 int pose_graph_label_region_ex(const uint8_t *session_seed, size_t seed_len,
                                 void *region, size_t region_len,
                                 uint64_t region_block_offset,
-                                uint8_t *scratch[POSE_REGION_THREADS],
-                                pose_hash_algo_t algo);
+                                uint8_t *scratch[POSE_REGION_THREADS_MAX],
+                                pose_hash_algo_t algo,
+                                uint32_t chunk_blocks);
 
 // Same but dispatches to a pre-created thread pool (non-inplace production path)
 int pose_graph_label_region_pooled(const uint8_t *session_seed, size_t seed_len,
                                     void *region, size_t region_len,
                                     uint64_t region_block_offset,
-                                    uint8_t *scratch[POSE_REGION_THREADS],
+                                    uint8_t *scratch[POSE_REGION_THREADS_MAX],
                                     pose_graph_pool_t *pool,
                                     pose_hash_algo_t algo,
                                     uint32_t chunk_blocks);
@@ -309,10 +325,35 @@ int pose_graph_label_region_pooled_inplace(
         const uint8_t *session_seed, size_t seed_len,
         void *region, size_t region_len,
         uint64_t region_block_offset,
-        uint8_t *scratch[POSE_REGION_THREADS],
+        uint8_t *scratch[POSE_REGION_THREADS_MAX],
         pose_graph_pool_t *pool,
         pose_hash_algo_t algo,
         uint32_t chunk_blocks);
+
+// Label one chunk in place on the calling thread, with private scratch: the
+// chunk_blocks output-set labels of global chunk chunk_index, rank r at out[r].
+// The verifier recomputes challenged chunks with this.
+int pose_graph_label_chunk_inplace(const uint8_t *session_seed, size_t seed_len,
+                                   uint64_t chunk_index, uint8_t *out, uint8_t *scratch,
+                                   pose_hash_algo_t algo, uint32_t chunk_blocks);
+
+// Label one wave of up to pose_region_threads() super-chunks, handing each
+// finished super-chunk to `sink` from the worker that produced it.  The
+// source-daemon generates every session's labels this way.
+int pose_graph_label_disk_wave(
+        const uint8_t *session_seed, size_t seed_len,
+        uint8_t *const slots[POSE_REGION_THREADS_MAX],
+        uint8_t *const scratch[POSE_REGION_THREADS_MAX],
+        pose_graph_pool_t *pool,
+        pose_hash_algo_t algo,
+        uint32_t chunk_blocks,
+        int n_this,
+        uint64_t super_index_base,
+        uint64_t region_block_offset,
+        uint64_t byte_start,
+        size_t write_len,
+        pose_label_sink_fn sink,
+        void *sink_ctx);
 ```
 
 Infrastructure functions (`pose_graph_descriptor`, `pose_chunk_seed`) always use BLAKE3 — they are called once at session setup, not in the hot labeling loop, and do not take an `algo` parameter.
@@ -329,25 +370,27 @@ The faithful in-place path (`pose_graph_label_region_pooled_inplace`) computes t
 | `pose_graph_label_region_pooled` | `2 × S(n+1) × 32` ≈ 17 MB | `m × 32` (out only) | 1.0 | Unlimited (streaming) |
 | `pose_graph_label_region_pooled_inplace` | bases + arenas (bounded) | `chunk_blocks × 32` (`O(G)`) | **1.0** | Unlimited (in-place) |
 
-The faithful in-place path is what the prover uses for RAM sessions and what the GPU labeler reproduces byte-for-byte. The verifier's `pose_graph_challenge` uses the full-scratch path. Persisting scaffold nodes instead would write the same number of bytes but leave most of them unchallengeable, since only `O(G)` is covered by the soundness bound.
+The faithful in-place path is what the source-daemon uses for every session and what the GPU labeler reproduces byte-for-byte. The verifier recomputes challenged chunks with `pose_graph_label_chunk_inplace`; `pose_graph_challenge` is the full-scratch equivalent for a single graph. Persisting scaffold nodes instead would write the same number of bytes but leave most of them unchallengeable, since only `O(G)` is covered by the soundness bound.
 
-The thread count is the compile-time constant `POSE_REGION_THREADS` (default 4, overridable with `-DPOSE_REGION_THREADS=N`), so peak heap scratch scales linearly with it — even 192 threads on the in-place path is ≈ 110 MB, trivial against the RAM being wiped.
+The thread count is decided at runtime by `pose_region_threads()`: the number of CPUs the process may run on, clamped to the compile-time cap `POSE_REGION_THREADS_MAX` (default 64, overridable with `-DPOSE_REGION_THREADS_MAX=N`). The cap sizes the fixed per-thread arrays the labelers take; callers allocate scratch only for the first `pose_region_threads()` entries. Peak heap scratch scales linearly with the thread count.
 
 ## Building
 
 ```bash
 # CPU library + tests (any host with a C11 compiler):
-cmake -S common -B common/build
-cmake --build common/build
-ctest --test-dir common/build
+cmake -S pose-common -B pose-common/build
+cmake --build pose-common/build
+ctest --test-dir pose-common/build
 
 # CPU library + CUDA labeler (needs nvcc):
-cmake -S common -B common/build-gpu -DTARGET_GPU=ON -DPOSE_CUDA_ARCH=90 -DPOSE_GPU_LABEL_STRATEGY=warp
-cmake --build common/build-gpu
+cmake -S pose-common -B pose-common/build-gpu -DTARGET_GPU=ON -DPOSE_CUDA_ARCH=90 -DPOSE_GPU_LABEL_STRATEGY=warp
+cmake --build pose-common/build-gpu
 ```
 
-## Benchmarking BLAKE3 vs SHA-256
+The top-level `Makefile` wraps the same builds in the `pose-build` container: `make pose-common-test` builds for the container's own architecture and runs the tests, and `make pose-common-x86_64` / `make pose-common-aarch64` cross-build the library, tests and `pose-label` with the CUDA labeler enabled. `test_gpu_parity` is built with `TARGET_GPU=ON` and compares GPU labels against the CPU path; `ctest` skips it on a machine without a GPU.
 
-The `bench_region` binary (built as part of `common/`) runs the full labeling pipeline for a configurable number of 128 KB chunks and reports throughput. It always uses `POSE_HASH_BLAKE3`. To compare against SHA-256, modify the `algo` argument passed to `pose_graph_label_region` in `bench/bench_region.c`, rebuild, and run both.
+## Benchmarking the hash algorithms
+
+The `bench_region` binary (built as part of `pose-common/`) runs the full labeling pipeline for a configurable number of 128 KB chunks and reports throughput. Its hash is chosen at configure time with `-DBENCH_ALGO=blake3` (the default), `sha256` or `aes_prf`; configure a build directory per algorithm and run each to compare.
 
 
