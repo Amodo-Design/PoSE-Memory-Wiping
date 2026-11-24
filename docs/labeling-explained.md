@@ -1,289 +1,442 @@
-# PoSE-DB Labeling: How It Works
+# Labels: what they are and how they are computed
 
-This document explains in plain terms what a label is, how many are needed to cover a target (RAM, GPU HBM or a disk), how each one is computed, and how the graph structure that governs the process maps onto the target's address space. It is written in terms of RAM; a disk is identical with "physical byte offset" read as "byte offset from sector 0".
+This document explains the data that a wipe fills memory with: what a label is,
+how one is computed, why it cannot be recomputed quickly, and where each label
+ends up in the memory being wiped.
 
----
+The code is the reference. The labelling rules live in
+`pose-common/src/graph.c` and `pose-common/src/hash.c`. If this document and
+that code disagree, the code is right.
 
-## 1. What Is a Label?
+For how labels are moved around a server tray and challenged over the network,
+see [`sink-source-architecture.md`](sink-source-architecture.md).
 
-A label is a **32-byte (256-bit) cryptographic hash** — the output of one BLAKE3 or SHA-256 call.
+## Overview
 
-When the prover labels RAM, it writes one 32-byte label to each 32-byte block of physical memory. Writing a label **is** the erasure: the pseudorandom hash value overwrites whatever data was there before.
+A *Proof of Secure Erasure* fills a memory with data that only fits if the old
+contents are gone, and then checks that the data is really there. The data is a
+sequence of 32-byte **labels**, one per 32 bytes of memory. Writing the labels
+*is* the erasure.
 
----
+The check is a quiz against a stopwatch. The verifier asks for the label at a
+random position and accepts the answer only if it is correct and arrives within
+a few milliseconds. For that to prove anything, a label must have two
+properties:
 
-## 2. How Many Labels Cover 1 GB?
+- **It cannot be guessed or prepared in advance.** Every label depends on a
+  random 32-byte seed that the verifier picks at the start of the run.
+- **It cannot be rebuilt in time.** A machine that kept its old data and threw
+  the labels away must not be able to recompute the one it is asked for before
+  the stopwatch runs out.
+
+The second property is the hard one, and it is what the rest of this document
+is about. A plain scheme such as `label[i] = hash(seed, i)` fails it: one hash
+takes well under a microsecond, so a cheat could store nothing and compute any
+answer on demand.
+
+The fix is to make each label the result of a long **chain** of hashes, where
+every hash needs the output of earlier ones. Hashes in a chain cannot be done
+in parallel, so no amount of hardware shortens the chain. The pattern of "which
+hash needs which earlier outputs" is a graph, and it is designed so that the
+chain behind every stored label is long, even for a cheat who keeps some of the
+intermediate values.
+
+The price is work. To produce the labels honestly, the wiping machine must
+compute the whole graph, which is a few hundred hashes for every label it
+stores. That is why a wipe takes far longer than writing zeros.
+
+## Vocabulary
+
+| Term | Meaning |
+|---|---|
+| **Label** | One 32-byte hash output. |
+| **Block** | One 32-byte slot of the memory being wiped. Block `i` holds label `i`. |
+| **Session seed** | 32 random bytes chosen by the verifier for one session. |
+| **Chunk** | A group of `chunk_blocks` consecutive blocks whose labels are computed together, from one graph. Chunks are independent of each other. |
+| **Chunk seed** | 32 bytes derived from the session seed and the chunk's index. |
+| **Node** | One hash computation in a chunk's graph. Its output is that node's label. |
+| **Predecessor** | A node whose label is an input to another node's hash. A node has zero, one or two. |
+| **Source node** | A node with no predecessors. |
+| **Scaffold** | All the nodes of one chunk's graph. Most exist only to make the chains long. |
+| **Output set** | The `chunk_blocks` scaffold nodes whose labels are stored. |
+| **γ** (gamma) | The length of the hash chain a cheat must redo to rebuild one stored label. |
+
+`chunk_blocks` is always a power of two. The library's built-in default is
+4,096 (`POSE_CHUNK_BLOCKS`). The verifier chooses the value for each session,
+and its own default is 131,072 (2^17). Both appear in the examples below.
+
+## From a memory to chunks
+
+A target is cut into 32-byte blocks, and the blocks are grouped into chunks.
+For 1 GiB of memory:
 
 ```
-1 GB = 1,073,741,824 bytes
-1 label = 32 bytes
-Labels needed = 1,073,741,824 ÷ 32 = 33,554,432  (≈ 33.5 million labels)
+blocks:  1,073,741,824 / 32 = 33,554,432 labels
+
+chunk_blocks = 4,096    one chunk = 128 KiB    8,192 chunks
+chunk_blocks = 131,072  one chunk = 4 MiB        256 chunks
 ```
 
-Those labels are not all computed at once. The region is processed in **chunks** of 4,096 labels (128 KB of output each):
+Each chunk gets its own seed:
 
 ```
-1 GB ÷ 128 KB per chunk = 8,192 chunks
+chunk seed = BLAKE3-derive-key("pose-db/chunk-seed",
+                               session seed || chunk index as 8 bytes, big-endian)
 ```
 
-Each chunk is independent — it uses its own derived seed and can be processed in parallel with other chunks. The number of CPU threads is configurable at build time (`POSE_REGION_THREADS`, default 4).
+Two things follow from that:
 
-### The scratch buffer
+- **Chunks are independent.** Nothing computed for one chunk is needed by
+  another, so chunks can be computed in parallel and in any order.
+- **Position is baked in.** The chunk index counts from the start of the
+  target's address space, not from the start of the session. The same seed
+  gives different labels at different addresses. The exact formula is in
+  [Where each label is stored](#where-each-label-is-stored).
 
-Computing one chunk does not just produce 4,096 labels. The graph algorithm requires computing **557,054 intermediate (scratch) labels** per chunk that are never written to RAM — they exist only to build chains of cryptographic dependency.
+From here on, everything happens inside one chunk.
 
-| Per chunk | Count | Memory |
+## How one label is computed
+
+Every node in a chunk's graph has a number, its **node index**, counted from 0
+within the chunk. A node's label is the hash of a fixed 192-byte message:
+
+```
+offset   size   field
+     0      8   node index, big-endian
+     8     56   zeros
+    64     32   label of the first predecessor   (zeros if there is none)
+    96     32   label of the second predecessor  (zeros if there is none)
+   128     32   chunk seed
+   160     32   graph descriptor
+```
+
+| Field | Why it is there |
+|---|---|
+| Node index | Makes every node's label different, even when two nodes have the same predecessors. |
+| Predecessor labels | Create the dependency: this hash cannot start until those labels exist. |
+| Chunk seed | Ties the label to this run and this position in the target. |
+| Graph descriptor | A hash of the graph's shape: `chunk_blocks`, the graph parameter `n` and the label width (256 bits). Labels from one chunk size can never be passed off as labels from another. |
+
+The message is three 64-byte blocks, which is three BLAKE3 compression calls.
+The layout is the same for every node, so nodes can be hashed in SIMD batches.
+
+When a node has two predecessors, the one with the lower node index always
+goes first. That makes the message unambiguous.
+
+### The hash function
+
+`algo` in a session selects the hash. All three give 32-byte labels.
+
+| `algo` | Hash | Notes |
 |---|---|---|
-| Output labels (written to RAM) | 4,096 | 128 KB |
-| Scratch labels (intermediate only) | 557,054 | ≈ 17 MB |
-| **Ratio** | **136:1** | |
+| 0 | BLAKE3 | The production choice. Used in keyed mode, with one fixed key for source nodes and another for all other nodes, so the two kinds can never collide. The keys are derived from the strings `pose-db/label/src` and `pose-db/label/int`. The only hash a GPU supports. |
+| 1 | SHA-256 | Plain SHA-256 of the same 192 bytes. For throughput comparison only. |
+| 2 | AES-PRF | AES-128 CBC-MAC, computed twice with the two halves of the chunk seed as keys. Uses a shorter 112-byte message, because the seed is the key and need not be in the message. |
 
-The scratch buffer is constant size regardless of how large the RAM region is. A 1 GB region and a 256 GB region both use the same scratch buffer per thread — only the number of chunk iterations changes.
+## The graph
 
-> **Attestation (faithful labeling).** Only the 4,096 output labels per chunk — the **output set `O(G)`** — are persisted to RAM; the 557,054 scaffold labels are computed transiently in scratch and discarded. This is deliberate: the PoSE-DB soundness bound (paper Corollary 2) holds **only** for `O(G)`. Internal scaffold nodes sit at shallow graph depth, so a relay adversary could recompute them within the RTT window — challenging them proves nothing. Persisting only `O(G)` means **every persisted byte is a challengeable output label → attested_fraction = 1.0**. The cost is that the labeler still *hashes* the full scaffold transiently — ≈ 136× more hashing than the persisted outputs at the default chunk size (≈ 384× at `chunk_blocks = 2^20`), so wipe time scales with the scaffold, not the persisted bytes.
+The graph says which nodes are predecessors of which. It is never stored as a
+table of edges. It is defined by a recursive rule, and the labeller walks that
+rule, computing each node as soon as its predecessors are ready.
 
----
+It is built from three kinds of piece.
 
-## 3. How Each Label Is Created
+### Piece 1: the butterfly
 
-Every label is the hash of a **192-byte input message** assembled from four components:
+A butterfly of dimension `d` takes `2^d` labels in and gives `2^d` labels out.
+It has `d + 1` layers of `2^d` nodes each:
 
-```
-┌─────────────────────────────────────── 192 bytes ──────────────────────────────────────┐
-│                                                                                         │
-│  Block 0 (64 bytes)           Block 1 (64 bytes)           Block 2 (64 bytes)          │
-│  ┌──────────┬──────────────┐  ┌──────────────┬──────────┐  ┌──────────────┬──────────┐ │
-│  │ node_idx │  56 × 0x00   │  │  predecessor │   pred   │  │    seed      │  graph   │ │
-│  │  8 bytes │  (padding)   │  │   label 0    │  label 1 │  │  (32 bytes)  │  desc.   │ │
-│  │ big-end  │              │  │  (32 bytes)  │ (32 bytes│  │              │ (32 bytes│ │
-│  │          │              │  │   or zeros)  │  or zeros│  │              │          │ │
-│  └──────────┴──────────────┘  └──────────────┴──────────┘  └──────────────┴──────────┘ │
-│                                                                                         │
-└─────────────────────────────────────────────────────────────────────────────────────────┘
-```
+- **Layer 0:** node `i` has one predecessor, input `i`.
+- **Layers 1 to d:** node `i` has two predecessors in the layer above: node `i`
+  and the node whose position differs from `i` in one bit. The first of these
+  layers uses the highest bit, the last uses the lowest.
 
-**What each field means:**
-
-| Field | Size | Value | Purpose |
-|---|---|---|---|
-| `node_index` | 8 bytes | This node's unique ID within the chunk | Makes every label globally unique — same preds + different index → different label |
-| padding | 56 bytes | All zeros | Pads Block 0 to 64 bytes (one BLAKE3 block) |
-| `pred0` | 32 bytes | Label of first predecessor node, or zeros | Creates cryptographic dependency on earlier labels |
-| `pred1` | 32 bytes | Label of second predecessor, or zeros | Source nodes (no predecessors) have both fields zero |
-| `seed` | 32 bytes | Per-chunk session seed | Ties every label in this chunk to the verifier's secret |
-| `descriptor` | 32 bytes | Hash of (m, n, 256) | Encodes graph shape — prevents labels from one graph being reused in another |
-
-### How the seed gets here
-
-The verifier generates a random session seed (32 bytes). The prover derives a **per-chunk seed** from it:
-
-```mermaid
-flowchart LR
-    V["Verifier\nsession seed\n(32 bytes)"]
-    CS["BLAKE3 derive-key\n'pose-db/chunk-seed'\nseed ∥ chunk_index"]
-    S["Chunk seed\n(32 bytes)"]
-    G["Graph descriptor\nhash(m, n, 256)"]
-    M["192-byte\nmessage"]
-    H["BLAKE3 / SHA-256"]
-    L["32-byte label"]
-
-    V --> CS --> S
-    S --> M
-    G --> M
-    M --> H --> L
-```
-
-Because the chunk seed embeds the chunk index, labels in chunk 0 and chunk 1 are completely different even if the graph structure is identical.
-
-### Source vs internal nodes
-
-A **source node** has no predecessors — Block 1 is all zeros. It is labeled purely from its index, seed, and descriptor.
-
-An **internal node** has one or two predecessors. Its label depends on the predecessor labels, which must be computed first. This chain of dependency is what makes it hard to fake: to answer a challenge at node N, the prover must have actually computed every node on the path leading to N.
-
----
-
-## 4. The Graph Structure
-
-The graph defines **which nodes are predecessors of which**. It is not stored anywhere — it is computed on the fly from a formula as the labeling proceeds.
-
-### Why a graph at all?
-
-A simple flat structure (each label independent) would be easy to fake: the device could discard the labels and recompute any individual one on demand. The graph makes this infeasible: answering challenge C quickly requires having pre-computed all of C's ancestors. With 136 scratch nodes per output node and deep dependency chains, there is no shortcut.
-
-### The building blocks
-
-The graph is built from three components that nest recursively:
-
-**1. Source node** — the base case. No inputs, just seed + index.
-
-**2. Butterfly connector** — a cross-wired mixing network. Takes `2^d` input node IDs, produces `2^d` output node IDs, using `d+1` layers. In each layer, every node combines two nodes from the previous layer according to a bit-reversal pattern.
+A butterfly of dimension 2:
 
 ```mermaid
 flowchart TD
-    subgraph "Butterfly connector (dim = 2, width = 4)"
-        direction TB
-        I0["input 0"] & I1["input 1"] & I2["input 2"] & I3["input 3"]
+    I0["in 0"] --> A0["a0"]
+    I1["in 1"] --> A1["a1"]
+    I2["in 2"] --> A2["a2"]
+    I3["in 3"] --> A3["a3"]
 
-        A0["A"] & A1["B"] & A2["C"] & A3["D"]
-        I0 --> A0
-        I1 --> A1
-        I2 --> A2
-        I3 --> A3
+    A0 --> B0["b0 = H(a0, a2)"]
+    A2 --> B0
+    A1 --> B1["b1 = H(a1, a3)"]
+    A3 --> B1
+    A0 --> B2["b2 = H(a0, a2)"]
+    A2 --> B2
+    A1 --> B3["b3 = H(a1, a3)"]
+    A3 --> B3
 
-        B0["E\nhash(A,C)"] & B1["F\nhash(B,D)"] & B2["G\nhash(A,C)"] & B3["H\nhash(B,D)"]
-        A0 --> B0 & B2
-        A1 --> B1 & B3
-        A2 --> B0 & B2
-        A3 --> B1 & B3
-
-        C0["out 0\nhash(E,F)"] & C1["out 1\nhash(E,F)"] & C2["out 2\nhash(G,H)"] & C3["out 3\nhash(G,H)"]
-        B0 --> C0 & C1
-        B1 --> C0 & C1
-        B2 --> C2 & C3
-        B3 --> C2 & C3
-    end
+    B0 --> C0["out 0 = H(b0, b1)"]
+    B1 --> C0
+    B0 --> C1["out 1 = H(b0, b1)"]
+    B1 --> C1
+    B2 --> C2["out 2 = H(b2, b3)"]
+    B3 --> C2
+    B2 --> C3["out 3 = H(b2, b3)"]
+    B3 --> C3
 ```
 
-> *Each node has a unique `node_index` so even nodes that share the same pair of predecessors produce different labels.*
+`b0` and `b2` have the same predecessors but different node indexes, so their
+labels differ.
 
-The cross-wiring ensures that any single input influences many outputs, and any single output depends on many inputs. This gives the depth-robust property: you cannot skip nodes.
+The point of a butterfly is mixing. After `d` layers **every output depends on
+every input**. You cannot compute any one output without all of the inputs.
 
-**3. Connected subgraph** — chains butterfly connectors together with an ingress connection that feeds outputs of one level into inputs of the next, building deeper dependency chains.
+A butterfly of dimension `d` has `B(d) = (d + 1) × 2^d` nodes.
 
-### The full standalone structure
+### Piece 2: the connected block
 
-One "standalone" subgraph (the graph uses two of these) is built recursively:
+A connected block of level `L` takes `2^L` labels in and gives `2^L` labels
+out. At level 0 it is a single node with one predecessor. At level `L` it is
+made of two connected blocks of level `L − 1` with two butterflies between
+them:
 
 ```mermaid
 flowchart LR
-    SRC["Standalone\nlevel − 1\n(source half)"]
-    BF["Butterfly\nconnector\ndim = level − 1"]
-    CON["Connected\nsubgraph\nlevel − 1"]
-
-    SRC -->|"2^(level-1) node IDs"| BF
-    BF -->|"2^(level-1) node IDs"| CON
-
-    SRC -.->|"left output nodes"| OUT["Output\nnodes"]
-    CON -.->|"right output nodes"| OUT
+    IN1["inputs,<br/>first half"] --> LEFT["connected block<br/>level L − 1"]
+    IN2["inputs,<br/>second half"] --> ING["butterfly<br/>(ingress)"]
+    LEFT --> CEN["butterfly<br/>(center)"]
+    ING --> CEN
+    CEN --> RIGHT["connected block<br/>level L − 1"]
+    LEFT -. "left outputs" .-> OUT["outputs:<br/>left, then right"]
+    RIGHT -. "right outputs" .-> OUT
 ```
 
-The standalone at level `L` contains `S(L)` total nodes:
+1. The first half of the inputs feeds a connected block of level `L − 1`. Its
+   outputs are the *left outputs*.
+2. The second half of the inputs goes through a butterfly, the *ingress*.
+3. A second butterfly, the *center*, combines the two. Its layer 0 is special:
+   node `i` has two predecessors, left output `i` and ingress output `i`.
+4. The center's outputs feed another connected block of level `L − 1`. Its
+   outputs are the *right outputs*.
 
-| Level | Nodes S(L) |
+The right outputs therefore sit behind everything else in the block. They
+depend on every input.
+
+A connected block has `C(L) = 2 × C(L − 1) + 2 × B(L − 1)` nodes, with
+`C(0) = 1`.
+
+### Piece 3: the standalone block
+
+A standalone block is the same idea with no inputs. At level 0 it is a single
+source node. At level `L`:
+
+```mermaid
+flowchart LR
+    SA["standalone block<br/>level L − 1"] --> BF["butterfly"]
+    BF --> CON["connected block<br/>level L − 1"]
+    SA -. "left outputs" .-> OUT["outputs:<br/>left, then right"]
+    CON -. "right outputs" .-> OUT
+```
+
+1. A standalone block of level `L − 1` produces the *left outputs*.
+2. A butterfly mixes them.
+3. A connected block of level `L − 1`, fed by the butterfly, produces the
+   *right outputs*.
+
+A standalone block has `S(L) = S(L − 1) + B(L − 1) + C(L − 1)` nodes, with
+`S(0) = 1`. It grows quickly:
+
+| Level | Nodes `S(L)` |
 |---|---|
 | 0 | 1 |
 | 1 | 3 |
 | 2 | 11 |
 | 5 | 383 |
 | 8 | 7,679 |
-| 11 | 116,735 |
-| **12** (used for 4,096-block chunks) | **278,527** |
+| 12 | 278,527 |
+| 17 | 18,087,935 |
 
-For a chunk with `m = 4,096` output blocks, the algorithm builds **two standalone graphs at level 12**, giving `2 × 278,527 = 557,054` total scratch nodes.
+Only the very first node of a standalone block is a source node. Everything
+else descends from it.
 
-### Which nodes become output labels?
+### The whole graph for one chunk
 
-Not all scratch nodes are output. The algorithm selects a specific subset — the **challenge set** — consisting of:
+For a chunk of `m = chunk_blocks` labels, let `n` be `log2(m) − 1`, so that
+`2^(n+1) = m`. The chunk's graph is **two standalone blocks of level `n + 1`**,
+side by side, with no edges between them. Node indexes run through the first
+copy and then carry on through the second.
 
-- The **second half** of the base output nodes from the left standalone
-- The **first half** of the base output nodes from the right standalone
-
-This gives exactly `m = 4,096` output labels per chunk.
+Each copy has `m` outputs: `m / 2` left and `m / 2` right. **The output set is
+the right outputs of both copies**, `m` labels in total. These are the labels
+that get stored. They are the nodes at the very end of each copy, behind all of
+the mixing.
 
 ```mermaid
 flowchart TB
-    subgraph "Left standalone (S(12) = 278,527 nodes)"
-        LN["... internal nodes ..."]
-        LB0["first half\n2,048 nodes\n(not output)"]
-        LB1["second half\n2,048 nodes\n→ output labels 0–2047"]
+    subgraph C1["First standalone block, level n + 1"]
+        L1["scaffold nodes"] --> LO["left outputs<br/>m / 2 nodes<br/>not stored"]
+        L1 --> RO["right outputs<br/>m / 2 nodes"]
     end
-    subgraph "Right standalone (S(12) = 278,527 nodes)"
-        RN["... internal nodes ..."]
-        RB0["first half\n2,048 nodes\n→ output labels 2048–4095"]
-        RB1["second half\n2,048 nodes\n(not output)"]
+    subgraph C2["Second standalone block, level n + 1"]
+        L2["scaffold nodes"] --> LO2["left outputs<br/>m / 2 nodes<br/>not stored"]
+        L2 --> RO2["right outputs<br/>m / 2 nodes"]
     end
-
-    LB1 --> OUT["4,096 output labels\n(written to RAM)"]
-    RB0 --> OUT
+    RO --> ST["stored labels 0 to m/2 − 1"]
+    RO2 --> ST2["stored labels m/2 to m − 1"]
 ```
 
----
+The scaffold is much larger than the output set:
 
-## 5. How the Graph Maps to Physical RAM
+| | `chunk_blocks` = 4,096 | `chunk_blocks` = 131,072 |
+|---|---|---|
+| Graph parameter `n` | 11 | 16 |
+| Level of each standalone block | 12 | 17 |
+| Scaffold nodes, `2 × S(n + 1)` | 557,054 | 36,175,870 |
+| Stored labels | 4,096 | 131,072 |
+| Hashes per stored label | 136 | 276 |
+| γ, which is `2^n` | 2,048 | 65,536 |
 
-The labels are written directly into the target physical memory region via a `/dev/mem` mapping. There is a strict correspondence between label index and physical address:
+For the 1 GiB example at `chunk_blocks` = 131,072, that is 256 chunks of
+36 million hashes each: about 9.3 billion hashes to store 33.5 million labels.
+
+## Why this cannot be faked
+
+**No stored label can be rebuilt in time.** γ is the number of hashes that must
+be done one after another to rebuild a stored label that was thrown away. For
+this graph γ is `2^n`, half of `chunk_blocks`. The construction is
+*depth-robust*: the chain stays long even if the cheat keeps a share of the
+scaffold labels to start from. The proof of that is in the PoSE-DB paper; this
+code implements the paper's graph and does not re-derive it.
+
+The verifier turns γ into a time limit. It assumes a cost per hash (150 ns by
+default) and works out how many hashes fit into a challenge's time limit. Call
+that `q`. A plan is refused unless γ is larger than `q`, and the defaults keep
+a margin of 1.5. With `chunk_blocks` = 131,072 and a 6 ms limit, `q` is 40,000
+against a γ of 65,536.
+
+This is why the verifier does not use the library's default chunk size. A
+4,096-block chunk has a γ of 2,048, which is about 0.3 ms of hashing: less
+than a network round trip.
+
+**Only the output set is stored, and that is deliberate.** The paper's
+guarantee covers the output set and nothing else. Scaffold nodes near the start
+of the graph have short chains behind them, so a challenge on one of those
+would prove nothing. Storing only the output set means every byte of the wiped
+memory holds a label that is worth challenging. The cost is that the scaffold
+is hashed and then discarded.
+
+**A bigger chunk is safer and slower.** Doubling `chunk_blocks` doubles γ. It
+also raises the hashes per stored label (136 at 2^12, 276 at 2^17, 384 at
+2^20) and the working memory needed to compute a chunk.
+
+## How the labeller walks the graph
+
+The recursive definition above is also the algorithm. The labeller calls the
+standalone rule, which calls the butterfly and connected rules, and each node
+is hashed the moment it is reached. Node indexes are handed out in that order,
+so a predecessor always has a lower index than the node that needs it.
+
+Three properties of the implementation are worth knowing.
+
+**Working memory is small.** A scaffold of 36 million labels would take over
+1 GiB if every label were kept. It is not needed: once a piece of the graph has
+produced its outputs, its inner labels are never read again and their space is
+reused. The labeller keeps the two copies' output arrays plus a reusable arena,
+`20 × chunk_blocks / 2` labels in all:
+
+| `chunk_blocks` | Scaffold if kept whole | Working memory actually used |
+|---|---|---|
+| 4,096 | 17 MiB | 1.25 MiB |
+| 131,072 | 1.08 GiB | 40 MiB |
+| 1,048,576 | 12 GiB | 320 MiB |
+
+This is per thread, and it depends only on the chunk size, never on the size of
+the target. `pose_graph_scratch_bytes_inplace()` returns the figure.
+
+A simpler reference path that does keep every label also exists
+(`pose_graph_label()`, `pose_graph_challenge()`). The tests use it to check the
+memory-saving path byte for byte.
+
+**Chunks run in parallel, one per thread.** A fixed pool of threads is started
+once. The thread count is the number of CPUs the process may run on, capped at
+build time by `POSE_REGION_THREADS_MAX` (64 by default). Each thread has its
+own working memory and labels one chunk at a time.
+
+**Nodes in a layer are hashed in batches.** The nodes of one butterfly layer do
+not depend on each other, so up to 16 are hashed in one SIMD call. Batching
+changes speed only. It never changes a label.
+
+### On a GPU
+
+The CUDA labeller computes the same graph with the same hash inputs, so its
+labels are byte-identical to the CPU's, and a verifier cannot tell which one
+produced them. It can only use BLAKE3. Several scheduling strategies exist
+(`level`, `block`, `thread`, `warp`), chosen at build time; they differ in
+speed, not in output. The details are in the header comments of
+`pose-common/src/cuda/label_gpu_*.cu` and `pose-common/include/gpu_session.h`.
+[`common-library.md`](common-library.md) documents the CPU library's API.
+
+## Where each label is stored
+
+A session covers bytes `[base, base + size)` of a target and holds `size / 32`
+labels. Label `i` of the session is stored at:
 
 ```
-label i  →  physical bytes [ base + i×32 ,  base + i×32 + 32 )
+base + i × 32
 ```
 
-### Region → chunks → labels → bytes
+Within a chunk, the output set is stored in order: the first copy's right
+outputs, then the second copy's.
 
-```mermaid
-flowchart TD
-    RAM["Physical RAM\n1 GB = 1,073,741,824 bytes"]
-    C0["Chunk 0\n128 KB output\n@ byte 0"]
-    C1["Chunk 1\n128 KB output\n@ byte 131,072"]
-    CN["..."]
-    C8191["Chunk 8,191\n128 KB output\n@ byte 1,073,610,752"]
-
-    RAM --> C0 & C1 & CN & C8191
-
-    C0 --> S0["Seed: BLAKE3(session_seed ∥ 0)"]
-    C0 --> L0["Label 0 → bytes 0–31"]
-    C0 --> L1["Label 1 → bytes 32–63"]
-    C0 --> L4095["Label 4,095 → bytes 131,040–131,071"]
-```
-
-### Seed isolation between chunks
-
-Each chunk uses an independent seed derived from the verifier's session seed and the chunk's index:
+To find the label that belongs at block `i`, in either direction:
 
 ```
-chunk_seed_i = BLAKE3_derive_key("pose-db/chunk-seed", session_seed ∥ uint64_be(i))
+global chunk index = (base / 32) / chunk_blocks  +  i / chunk_blocks
+position in chunk  =  i % chunk_blocks
 ```
 
-This means:
-- Chunk 0 and Chunk 1 produce completely different labels even at the same node position
-- The verifier can recompute the seed for any chunk from the session seed alone
-- A challenged label at physical address `P` can be reconstructed by the verifier as: `chunk_index = (P / 32) / 4096`, derive `chunk_seed`, rerun the graph, look up the output label at position `(P / 32) % 4096`
+The global chunk index goes into the chunk seed derivation shown earlier. A
+worked example of these two lines is in
+[`sink-source-architecture.md`](sink-source-architecture.md#the-placement-contract).
 
-### The parallel threads
+For RAM, `base` is a physical address. For a disk it is the byte offset from
+the start of the device. For a GPU it is 0.
 
-Chunks are processed in parallel, one per CPU thread, each with its own scratch buffer. The thread count is set at build time by `POSE_REGION_THREADS` (default 4) and is printed at wipe time (`threads=N`). The diagram below shows the default of 4:
+### What the verifier does with a challenge
 
-```mermaid
-flowchart LR
-    subgraph Thread 0
-        SC0["scratch\n17 MB"] --> CK0["chunk N\n→ 128 KB to RAM"]
-    end
-    subgraph Thread 1
-        SC1["scratch\n17 MB"] --> CK1["chunk N+1\n→ 128 KB to RAM"]
-    end
-    subgraph Thread 2
-        SC2["scratch\n17 MB"] --> CK2["chunk N+2\n→ 128 KB to RAM"]
-    end
-    subgraph Thread 3
-        SC3["scratch\n17 MB"] --> CK3["chunk N+3\n→ 128 KB to RAM"]
-    end
-```
+The verifier knows the session seed, so it can compute any label itself. There
+is no shortcut for it either: to check one label it must compute that label's
+whole chunk, scaffold included. It does so once per challenged chunk, with the
+same C code the daemons use, and compares 32 bytes.
 
-After each batch completes, the next batch begins. The scratch buffers are reused across batches — they are allocated once at startup and never freed until the entire region is labeled.
+That asymmetry is the design. The verifier may take seconds, before or after
+the stopwatch. The machine being tested has milliseconds.
 
----
+The `pose-label` tool (`pose-common/tools/pose_label.c`) does the same
+calculation from the command line and prints the expected label for any block.
 
-## Quick Reference
+## Quick reference
 
-| Parameter | Value |
+| | Value |
 |---|---|
 | Label size | 32 bytes |
-| Labels needed for 1 GB | 33,554,432 |
-| Labels per chunk | 4,096 |
-| Chunks needed for 1 GB | 8,192 |
-| Scratch nodes per chunk | 557,054 |
-| Scratch-to-output ratio | 136:1 |
-| Scratch memory per thread | ≈ 17 MB |
-| Parallel threads | 4 (default; build-configurable via `POSE_REGION_THREADS`) |
-| Input message size | 192 bytes |
-| Hash algorithm | BLAKE3 (default) or SHA-256 |
+| Hash input | 192 bytes: node index, two predecessor labels, chunk seed, graph descriptor |
+| Hash | BLAKE3 keyed (production), SHA-256 or AES-PRF |
+| Labels in 1 GiB | 33,554,432 |
+| `chunk_blocks` | a power of two, at most 2^20; library default 4,096, verifier default 131,072 |
+| Graph for one chunk | two standalone blocks of level `log2(chunk_blocks)` |
+| Stored labels | the right outputs of both blocks, in order |
+| γ | `chunk_blocks / 2` |
+| Hashes per stored label | 136 at 4,096; 276 at 131,072; 384 at 1,048,576 |
+| Working memory per thread | `320 × chunk_blocks` bytes |
+| Threads | one per available CPU, at most `POSE_REGION_THREADS_MAX` (default 64) |
+
+## Where to find it in the code
+
+| What | Where |
+|---|---|
+| Message layout, hash selection, chunk seed, graph descriptor | `pose-common/src/hash.c`, `pose-common/include/hash.h` |
+| Butterfly, connected and standalone rules; node counts | `pose-common/src/graph.c` (`emit_connector`, `emit_connected`, `emit_standalone`) |
+| The memory-saving labeller the daemons use | `pose-common/src/graph.c` (`do_label_inplace`, the `lc_*` functions) |
+| Thread pool and region labellers | `pose-common/src/graph.c`, `pose-common/include/graph.h` |
+| AES-PRF message and keys | `pose-common/include/aes_prf.h` |
+| GPU labellers | `pose-common/src/cuda/` |
+| The graph's edges, for inspection | `pose_graph_edges()` in `pose-common/include/graph.h` |
+| Expected label for a block, by hand | `pose-common/tools/pose_label.c` |
+| Tests, including CPU/GPU parity | `pose-common/test/` |
+| The verifier's γ and time-limit check | `pose-verifier/src/plan.rs` |
+| The verifier's recomputation of challenged chunks | `pose-verifier/src/labels.rs` |

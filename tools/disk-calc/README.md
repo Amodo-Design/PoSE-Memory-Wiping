@@ -7,7 +7,7 @@ and which parallelism shape is fastest?
 To *measure* that rate on real hardware (and actually perform a GPU-driven wipe), use
 `tools/disk-wipe-bench`; feed its reported per-GPU MiB/s back into `--gpu-mibs` here.
 
-Its node-count math mirrors `common/src/graph.c`. Stdlib-only Python, no dependencies.
+Its node-count math mirrors `pose-common/src/graph.c`. Stdlib-only Python, no dependencies.
 
 ## Quickstart — no flags to remember
 
@@ -43,7 +43,7 @@ orders of magnitude.
 Feed the tool the **persisted-output rate the labeler itself reports**:
 
 ```
-  GPU wipe: 8192 MiB in 195.2 s = 42.0 MiB/s      # common/src/cuda/label_gpu_common.cu
+  GPU wipe: 8192 MiB in 195.2 s = 42.0 MiB/s      # pose-common/src/cuda/label_gpu_common.cu
 ```
 
 → `--gpu-mibs 42`. Measure it at the **same `chunk_blocks`** the disk sessions will use:

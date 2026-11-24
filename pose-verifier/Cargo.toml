@@ -1,0 +1,25 @@
+[package]
+name = "pose-verifier"
+version = "0.1.0"
+edition = "2021"
+description = "PoSE-DB tray verifier: plans sessions from the inventory, drives challenges, recomputes labels"
+
+[[bin]]
+name = "pose-verifier"
+path = "src/main.rs"
+
+[dependencies]
+anyhow          = "1"
+axum            = "0.8"
+clap            = { version = "4", features = ["derive"] }
+form_urlencoded = "1"
+hex             = "0.4"
+rand            = "0.8"
+serde           = { version = "1", features = ["derive"] }
+serde_json      = "1"
+tokio           = { version = "1", features = ["rt-multi-thread", "net", "macros"] }
+toml            = "0.8"
+
+[build-dependencies]
+cc    = "1"
+cmake = "0.1"

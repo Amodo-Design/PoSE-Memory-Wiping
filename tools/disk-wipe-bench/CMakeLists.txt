@@ -16,15 +16,15 @@ project(disk_wipe_bench CXX CUDA)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-# CUDA 13's libcu++ requires C++17; keep the .cu on the same dialect as common/.
+# CUDA 13's libcu++ requires C++17; keep the .cu on the same dialect as pose-common/.
 set(CMAKE_CUDA_STANDARD 17)
 set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
 # Compute capability for the target GPU(s): 90 = Hopper (H100/H200),
-# 100 = Blackwell (GB200).  Forwarded to common/ so both halves agree.
+# 100 = Blackwell (GB200).  Forwarded to pose-common/ so both halves agree.
 set(POSE_CUDA_ARCH "90" CACHE STRING "CUDA compute capability for the target GPU(s)")
 
-# Turn on the CUDA labeling library inside common/ and pick the labeling
+# Turn on the CUDA labeling library inside pose-common/ and pick the labeling
 # strategy (level = byte-parity reference / default; block = recommended once
 # validated; thread = measure-only; warp = one warp per chunk, no block barrier).
 # These must be set before add_subdirectory.
@@ -33,8 +33,8 @@ set(POSE_GPU_LABEL_STRATEGY "level" CACHE STRING "GPU labeling strategy: level, 
 set(POSE_GPU_WARP_MIN_BLOCKS "3" CACHE STRING "warp strategy: min blocks/SM for __launch_bounds__")
 
 add_subdirectory(
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../common
-    ${CMAKE_CURRENT_BINARY_DIR}/common
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../pose-common
+    ${CMAKE_CURRENT_BINARY_DIR}/pose-common
 )
 
 find_package(CUDAToolkit REQUIRED)
